@@ -54,7 +54,7 @@ benchmark(
 	executable(
 		'fixed-benchmark',
 		'fixed-benchmark.c',
-		dependencies: test_runner_dep
+		dependencies: [ test_runner_dep, rt_dep ]
 	)
 )
 
@@ -69,39 +69,49 @@ test(
 	executable(
 		'cpp-compile-test',
 		'cpp-compile-test.cpp',
-		wayland_server_protocol_core_h,
+		wayland_server_protocol_h,
 		include_directories: src_inc
 	)
 )
 
 sed_path = find_program('sed').path()
 
-test(
-	'scanner-test',
-	find_program('scanner-test.sh'),
-	env: [
-		'TEST_DATA_DIR=@0@/data'.format(meson.current_source_dir()),
-		'TEST_OUTPUT_DIR=@0@/output'.format(meson.current_build_dir()),
-		'SED=@0@'.format(sed_path),
-		'WAYLAND_SCANNER=@0@'.format(wayland_scanner.full_path()),
-	],
-)
+if get_option('scanner')
+	test(
+		'scanner-test',
+		find_program('scanner-test.sh'),
+		env: [
+			'TEST_DATA_DIR=@0@/data'.format(meson.current_source_dir()),
+			'TEST_OUTPUT_DIR=@0@/output'.format(meson.current_build_dir()),
+			'SED=@0@'.format(sed_path),
+			'WAYLAND_SCANNER=@0@'.format(wayland_scanner.full_path()),
+		],
+	)
+endif
 
 tests = {
 	'array-test': [],
 	'client-test': [ wayland_server_protocol_h ],
 	'display-test': [
+		wayland_client_protocol_h,
+		wayland_server_protocol_h,
 		tests_server_protocol_h,
 		tests_client_protocol_c,
 		tests_protocol_c,
 	],
-	'connection-test': [ wayland_server_protocol_h ],
+	'connection-test': [
+		wayland_client_protocol_h,
+		wayland_server_protocol_h,
+	],
 	'event-loop-test': [ wayland_server_protocol_h ],
 	'fixed-test': [],
 	'interface-test': [ wayland_client_protocol_h ],
 	'list-test': [],
 	'map-test': [],
-	'sanity-test' : [ wayland_server_protocol_h ],
+	'sanity-test' : [
+		wayland_client_protocol_h,
+		wayland_server_protocol_h,
+	],
 	'socket-test': [
 		wayland_client_protocol_h,
 		wayland_server_protocol_h,
@@ -116,7 +126,7 @@ tests = {
 		files('../src/wayland-server.c'),
 		wayland_server_protocol_h,
 	],
-	'resources-test': [ wayland_server_protocol_core_h ],
+	'resources-test': [ wayland_server_protocol_h ],
 	'message-test': [
 		wayland_client_protocol_h,
 		wayland_server_protocol_h,
@@ -126,14 +136,16 @@ tests = {
 		wayland_server_protocol_h,
 	],
 	'protocol-logger-test': [
-		wayland_server_protocol_core_h,
-		wayland_client_protocol_core_h,
+		wayland_client_protocol_h,
+		wayland_server_protocol_h,
 	],
 	'headers-test': [
+		wayland_client_protocol_h,
+		wayland_server_protocol_h,
 		'headers-protocol-test.c',
-		'headers-protocol-core-test.c',
-		wayland_server_protocol_core_h,
 		wayland_client_protocol_core_h,
+		wayland_server_protocol_core_h,
+		'headers-protocol-core-test.c',
 	],
 	'os-wrappers-test': [],
 }

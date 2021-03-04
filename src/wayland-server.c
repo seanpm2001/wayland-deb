@@ -689,12 +689,12 @@ wl_resource_post_no_memory(struct wl_resource *resource)
  * Before Wayland 1.2.0, the definition of struct wl_resource was public.
  * It was made opaque just before 1.2.0, and later new fields were added.
  * The new fields cannot be accessed if a program is using the deprecated
- * defition, as there would not be memory allocated for them.
+ * definition, as there would not be memory allocated for them.
  *
  * The creation pattern for the deprecated definition was wl_resource_init()
  * followed by wl_client_add_resource(). wl_resource_init() was an inline
  * function and no longer exists, but binaries might still carry it.
- * wl_client_add_resource() still exists for ABI compatiblity.
+ * wl_client_add_resource() still exists for ABI compatibility.
  */
 static bool
 resource_is_deprecated(struct wl_resource *resource)
@@ -891,7 +891,7 @@ wl_client_destroy(struct wl_client *client)
 
 /* Check if a global filter is registered and use it if any.
  *
- * If no wl_global filter has been registered, this funtion will
+ * If no wl_global filter has been registered, this function will
  * return true, allowing the wl_global to be visible to the wl_client
  */
 static bool
@@ -1151,13 +1151,13 @@ wl_display_destroy(struct wl_display *display)
 /** Set a filter function for global objects
  *
  * \param display The Wayland display object.
- * \param filter  The global filter funtion.
+ * \param filter  The global filter function.
  * \param data User data to be associated with the global filter.
  * \return None.
  *
  * Set a filter for the wl_display to advertise or hide global objects
  * to clients.
- * The set filter will be used during wl_global advertisment to
+ * The set filter will be used during wl_global advertisement to
  * determine whether a global object should be advertised to a
  * given client, and during wl_global binding to determine whether
  * a given client should be allowed to bind to a global.
@@ -1481,28 +1481,32 @@ static int
 wl_socket_init_for_display_name(struct wl_socket *s, const char *name)
 {
 	int name_size;
-	const char *runtime_dir;
+	const char *runtime_dir = "";
+	const char *separator = "";
 
-	runtime_dir = getenv("XDG_RUNTIME_DIR");
-	if (!runtime_dir) {
-		wl_log("error: XDG_RUNTIME_DIR not set in the environment\n");
+	if (name[0] != '/') {
+		runtime_dir = getenv("XDG_RUNTIME_DIR");
+		if (!runtime_dir) {
+			wl_log("error: XDG_RUNTIME_DIR not set in the environment\n");
 
-		/* to prevent programs reporting
-		 * "failed to add socket: Success" */
-		errno = ENOENT;
-		return -1;
+			/* to prevent programs reporting
+			 * "failed to add socket: Success" */
+			errno = ENOENT;
+			return -1;
+		}
+		separator = "/";
 	}
 
 	s->addr.sun_family = AF_LOCAL;
 	name_size = snprintf(s->addr.sun_path, sizeof s->addr.sun_path,
-			     "%s/%s", runtime_dir, name) + 1;
+			     "%s%s%s", runtime_dir, separator, name) + 1;
 
 	s->display_name = (s->addr.sun_path + name_size - 1) - strlen(name);
 
 	assert(name_size > 0);
 	if (name_size > (int)sizeof s->addr.sun_path) {
-		wl_log("error: socket path \"%s/%s\" plus null terminator"
-		       " exceeds 108 bytes\n", runtime_dir, name);
+		wl_log("error: socket path \"%s%s%s\" plus null terminator"
+		       " exceeds 108 bytes\n", runtime_dir, separator, name);
 		*s->addr.sun_path = 0;
 		/* to prevent programs reporting
 		 * "failed to add socket: Success" */
@@ -1641,14 +1645,17 @@ wl_display_add_socket_fd(struct wl_display *display, int sock_fd)
  * variable for the socket name. If WAYLAND_DISPLAY is not set, then default
  * wayland-0 is used.
  *
- * The Unix socket will be created in the directory pointed to by environment
- * variable XDG_RUNTIME_DIR. If XDG_RUNTIME_DIR is not set, then this function
- * fails and returns -1.
+ * If the socket name is a relative path, the Unix socket will be created in
+ * the directory pointed to by environment variable XDG_RUNTIME_DIR. If
+ * XDG_RUNTIME_DIR is not set, then this function fails and returns -1.
  *
- * The length of socket path, i.e., the path set in XDG_RUNTIME_DIR and the
- * socket name, must not exceed the maximum length of a Unix socket path.
- * The function also fails if the user do not have write permission in the
- * XDG_RUNTIME_DIR path or if the socket name is already in use.
+ * If the socket name is an absolute path, then it is used as-is for the
+ * the Unix socket.
+ *
+ * The length of the computed socket path must not exceed the maximum length
+ * of a Unix socket path.
+ * The function also fails if the user does not have write permission in the
+ * directory or if the path is already in use.
  *
  * \memberof wl_display
  */
@@ -2035,7 +2042,7 @@ wl_client_for_each_resource(struct wl_client *client,
  * without corrupting the signal's list.
  *
  * Before passing a wl_priv_signal object to any other function it must be
- * initialized by useing wl_priv_signal_init().
+ * initialized by using wl_priv_signal_init().
  *
  * \memberof wl_priv_signal
  */
@@ -2065,7 +2072,7 @@ wl_priv_signal_add(struct wl_priv_signal *signal, struct wl_listener *listener)
  *
  * Returns the listener added to the given \a signal and with the given
  * \a notify function, or NULL if there isn't any.
- * Calling this function from withing wl_priv_signal_emit() is safe and will
+ * Calling this function from within wl_priv_signal_emit() is safe and will
  * return the correct value.
  *
  * \memberof wl_priv_signal

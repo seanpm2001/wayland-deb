@@ -101,7 +101,7 @@ create_tmpfile_cloexec(char *tmpname)
  *
  * If the C library implements posix_fallocate(), it is used to
  * guarantee that disk space is available for the file at the
- * given size. If disk space is insufficent, errno is set to ENOSPC.
+ * given size. If disk space is insufficient, errno is set to ENOSPC.
  * If posix_fallocate() is not supported, program may receive
  * SIGBUS on accessing mmap()'ed file contents instead.
  *
@@ -119,7 +119,6 @@ os_create_anonymous_file(off_t size)
 	const char *path;
 	char *name;
 	int fd;
-	int ret;
 
 #ifdef HAVE_MEMFD_CREATE
 	fd = memfd_create("wayland-cursor", MFD_CLOEXEC | MFD_ALLOW_SEALING);
@@ -155,25 +154,30 @@ os_create_anonymous_file(off_t size)
 			return -1;
 	}
 
-#ifdef HAVE_POSIX_FALLOCATE
-	/* 
-	 * Filesystems that do support fallocate will return EOPNOTSUPP.
-	 * In this case we need to fall back to ftruncate
-	 */
-	ret = posix_fallocate(fd, 0, size);
-	if (ret == 0) {
-		return fd;
-	} else if (ret != EOPNOTSUPP) {
-		close(fd);
-		errno = ret;
-		return -1;
-	}
-#endif
-	ret = ftruncate(fd, size);
-	if (ret < 0) {
+	if (os_resize_anonymous_file(fd, size) < 0) {
 		close(fd);
 		return -1;
 	}
 
 	return fd;
+}
+
+int
+os_resize_anonymous_file(int fd, off_t size)
+{
+#ifdef HAVE_POSIX_FALLOCATE
+	/* 
+	 * Filesystems that do support fallocate will return EINVAL or
+	 * EOPNOTSUPP. In this case we need to fall back to ftruncate
+	 */
+	errno = posix_fallocate(fd, 0, size);
+	if (errno == 0)
+		return 0;
+	else if (errno != EINVAL && errno != EOPNOTSUPP)
+		return -1;
+#endif
+	if (ftruncate(fd, size) < 0)
+		return -1;
+
+	return 0;
 }

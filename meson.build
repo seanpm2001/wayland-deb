@@ -1,8 +1,8 @@
 project(
 	'wayland', 'c', 'cpp',
-	version: '1.18.0',
+	version: '1.19.0',
 	license: 'MIT',
-	meson_version: '>= 0.47.0',
+	meson_version: '>= 0.52.1',
 	default_options: [
 		'warning_level=2',
 		'buildtype=debugoptimized'
@@ -56,6 +56,14 @@ if get_option('libraries')
 			error('@0@ is needed to compile Wayland libraries'.format(d['symbol']))
 		endif
 	endforeach
+
+	rt_dep = []
+	if not cc.has_function('clock_gettime', prefix: '#include <time.h>')
+		rt_dep = cc.find_library('rt')
+		if not cc.has_function('clock_gettime', prefix: '#include <time.h>', dependencies: rt_dep)
+			error('clock_gettime not found')
+		endif
+	endif
 endif
 
 scanner_deps = [ dependency('expat') ]
@@ -84,19 +92,20 @@ if get_option('libraries')
 	subdir('cursor')
 	subdir('egl')
 	subdir('tests')
+	if get_option('documentation')
+		subdir('doc')
+	endif
 endif
 
-if get_option('documentation')
-	subdir('doc')
+if get_option('scanner')
+	install_data([
+		'wayland-scanner.mk',
+		'protocol/wayland.xml',
+		'protocol/wayland.dtd',
+	])
+
+	install_data(
+		[ 'wayland-scanner.m4' ],
+		install_dir: join_paths(get_option('prefix'), get_option('datadir'), 'aclocal'),
+	)
 endif
-
-install_data([
-	'wayland-scanner.mk',
-	'protocol/wayland.xml',
-	'protocol/wayland.dtd',
-])
-
-install_data(
-	[ 'wayland-scanner.m4' ],
-	install_dir: join_paths(get_option('prefix'), get_option('datadir'), 'aclocal'),
-)

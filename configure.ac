@@ -1,7 +1,7 @@
 AC_PREREQ([2.64])
 
 m4_define([wayland_major_version],  [1])
-m4_define([wayland_minor_version], [18])
+m4_define([wayland_minor_version], [19])
 m4_define([wayland_micro_version], [0])
 m4_define([wayland_version],
           [wayland_major_version.wayland_minor_version.wayland_micro_version])
@@ -190,7 +190,6 @@ AC_CONFIG_FILES([Makefile
 		 doc/Makefile
 		 doc/publican/Makefile
 		 doc/doxygen/Makefile
-		 doc/man/Makefile
 		 egl/wayland-egl.pc
 		 egl/wayland-egl-backend.pc
 		 src/wayland-server-uninstalled.pc
