@@ -1,3 +1,10 @@
+wayland (1.19.0-2) UNRELEASED; urgency=medium
+
+  * Add missing dependency on libffi-dev (closes: #969284).
+    Thanks Julien Cristau for NMU fix at 1.18.0-2~exp1.1
+
+ -- Héctor Orón Martínez <zumbi@debian.org>  Mon, 08 Mar 2021 22:55:34 +0100
+
 wayland (1.19.0-1) unstable; urgency=high
 
   * New upstream release
