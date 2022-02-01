@@ -1,3 +1,11 @@
+wayland (1.20.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * debian/libwayland-client0.symbols: refresh
+  * debian/libwayland-server0.symbols: refresh
+
+ -- Héctor Orón Martínez <zumbi@debian.org>  Tue, 01 Feb 2022 18:10:38 +0100
+
 wayland (1.19.0-2) unstable; urgency=high
 
   * Add missing dependency on libffi-dev (closes: #969284).
