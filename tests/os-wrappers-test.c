@@ -23,6 +23,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+#include "../config.h"
 
 #define _GNU_SOURCE
 
@@ -46,26 +47,44 @@
 
 static int fall_back;
 
-static int (*real_socket)(int, int, int);
-static int wrapped_calls_socket;
+/* Play nice with sanitizers
+ *
+ * Sanitizers need to intercept syscalls in the compiler run-time library. As
+ * this isn't a separate ELF object, the usual dlsym(RTLD_NEXT) approach won't
+ * work: there can only be one function named "socket" etc. To support this, the
+ * sanitizer library names its interceptors with the prefix __interceptor_ ("__"
+ * being reserved for the implementation) and then weakly aliases it to the real
+ * function. The functions we define below will override the weak alias, and we
+ * can call them by the __interceptor_ name directly. This allows the sanitizer
+ * to do its work before calling the next version of the function via dlsym.
+ *
+ * However! We also don't know which of these functions the sanitizer actually
+ * wants to override, so we have to declare our own weak symbols for
+ * __interceptor_ and check at run time if they linked to anything or not.
+*/
 
-static int (*real_fcntl)(int, int, ...);
-static int wrapped_calls_fcntl;
+#define DECL(ret_type, func, ...) \
+	ret_type __interceptor_ ## func(__VA_ARGS__) __attribute__((weak)); \
+	static ret_type (*real_ ## func)(__VA_ARGS__);			\
+	static int wrapped_calls_ ## func;
 
-static ssize_t (*real_recvmsg)(int, struct msghdr *, int);
-static int wrapped_calls_recvmsg;
+#define REAL(func) (__interceptor_ ## func) ?				\
+	__interceptor_ ## func :					\
+	(typeof(&__interceptor_ ## func))dlsym(RTLD_NEXT, #func)
 
-static int (*real_epoll_create1)(int);
-static int wrapped_calls_epoll_create1;
+DECL(int, socket, int, int, int);
+DECL(int, fcntl, int, int, ...);
+DECL(ssize_t, recvmsg, int, struct msghdr *, int);
+DECL(int, epoll_create1, int);
 
 static void
 init_fallbacks(int do_fallbacks)
 {
 	fall_back = do_fallbacks;
-	real_socket = dlsym(RTLD_NEXT, "socket");
-	real_fcntl = dlsym(RTLD_NEXT, "fcntl");
-	real_recvmsg = dlsym(RTLD_NEXT, "recvmsg");
-	real_epoll_create1 = dlsym(RTLD_NEXT, "epoll_create1");
+	real_socket = REAL(socket);
+	real_fcntl = REAL(fcntl);
+	real_recvmsg = REAL(recvmsg);
+	real_epoll_create1 = REAL(epoll_create1);
 }
 
 __attribute__ ((visibility("default"))) int
@@ -82,10 +101,11 @@ socket(int domain, int type, int protocol)
 }
 
 __attribute__ ((visibility("default"))) int
-fcntl(int fd, int cmd, ...)
+(fcntl)(int fd, int cmd, ...)
 {
 	va_list ap;
-	void *arg;
+	int arg;
+	int has_arg;
 
 	wrapped_calls_fcntl++;
 
@@ -93,12 +113,27 @@ fcntl(int fd, int cmd, ...)
 		errno = EINVAL;
 		return -1;
 	}
+	switch (cmd) {
+	case F_DUPFD_CLOEXEC:
+	case F_DUPFD:
+	case F_SETFD:
+		va_start(ap, cmd);
+		arg = va_arg(ap, int);
+		has_arg = 1;
+		va_end(ap);
+		break;
+	case F_GETFD:
+		has_arg = 0;
+		break;
+	default:
+		fprintf(stderr, "Unexpected fctnl cmd %d\n", cmd);
+		abort();
+	}
 
-	va_start(ap, cmd);
-	arg = va_arg(ap, void*);
-	va_end(ap);
-
-	return real_fcntl(fd, cmd, arg);
+	if (has_arg) {
+		return real_fcntl(fd, cmd, arg);
+	}
+	return real_fcntl(fd, cmd);
 }
 
 __attribute__ ((visibility("default"))) ssize_t
@@ -307,7 +342,13 @@ do_os_wrappers_recvmsg_cloexec(int n)
 	struct marshal_data data;
 
 	data.nr_fds_begin = count_open_fds();
+#if HAVE_BROKEN_MSG_CMSG_CLOEXEC
+	/* We call the fallback directly on FreeBSD versions with a broken
+	 * MSG_CMSG_CLOEXEC, so we don't call the local recvmsg() wrapper. */
+	data.wrapped_calls = 0;
+#else
 	data.wrapped_calls = n;
+#endif
 
 	setup_marshal_data(&data);
 	data.nr_fds_conn = count_open_fds();

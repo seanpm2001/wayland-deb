@@ -41,9 +41,9 @@
 #if HAVE_LIBXML
 #include <libxml/parser.h>
 
-/* Embedded wayland.dtd file, see dtddata.S */
-extern char DTD_DATA_begin;
-extern int DTD_DATA_len;
+/* Embedded wayland.dtd file */
+/* static const char wayland_dtd[]; wayland.dtd */
+#include "wayland.dtd.h"
 #endif
 
 /* Expat must be included after libxml as both want to declare XMLCALL; see
@@ -112,8 +112,8 @@ is_dtd_valid(FILE *input, const char *filename)
 	if (!ctx || !dtdctx)
 		abort();
 
-	buffer = xmlParserInputBufferCreateMem(&DTD_DATA_begin,
-					       DTD_DATA_len,
+	buffer = xmlParserInputBufferCreateMem(wayland_dtd,
+					       sizeof(wayland_dtd),
 					       XML_CHAR_ENCODING_UTF8);
 	if (!buffer) {
 		fprintf(stderr, "Failed to init buffer for DTD.\n");
@@ -236,6 +236,7 @@ struct entry {
 	char *summary;
 	int since;
 	struct wl_list link;
+	struct description *description;
 };
 
 struct parse_context {
@@ -245,6 +246,7 @@ struct parse_context {
 	struct interface *interface;
 	struct message *message;
 	struct enumeration *enumeration;
+	struct entry *entry;
 	struct description *description;
 	char character_data[8192];
 	unsigned int character_data_length;
@@ -542,6 +544,7 @@ free_entry(struct entry *entry)
 	free(entry->uppercase_name);
 	free(entry->value);
 	free(entry->summary);
+	free_description(entry->description);
 
 	free(entry);
 }
@@ -884,6 +887,7 @@ start_element(void *data, const char *element_name, const char **atts)
 			entry->summary = NULL;
 		wl_list_insert(ctx->enumeration->entry_list.prev,
 			       &entry->link);
+		ctx->entry = entry;
 	} else if (strcmp(element_name, "description") == 0) {
 		if (summary == NULL)
 			fail(&ctx->loc, "description without summary");
@@ -893,6 +897,8 @@ start_element(void *data, const char *element_name, const char **atts)
 
 		if (ctx->message)
 			ctx->message->description = description;
+		else if (ctx->entry)
+			ctx->entry->description = description;
 		else if (ctx->enumeration)
 			ctx->enumeration->description = description;
 		else if (ctx->interface)
@@ -1008,6 +1014,8 @@ end_element(void *data, const XML_Char *name)
 			     ctx->enumeration->name);
 		}
 		ctx->enumeration = NULL;
+	} else if (strcmp(name, "entry") == 0) {
+		ctx->entry = NULL;
 	} else if (strcmp(name, "protocol") == 0) {
 		struct interface *i;
 
@@ -1230,37 +1238,39 @@ emit_stubs(struct wl_list *message_list, struct interface *interface)
 
 		printf(")\n"
 		       "{\n");
-		if (ret && ret->interface_name == NULL) {
-			/* an arg has type ="new_id" but interface is not
-			 * provided, such as in wl_registry.bind */
-			printf("\tstruct wl_proxy *%s;\n\n"
-			       "\t%s = wl_proxy_marshal_constructor_versioned("
-			       "(struct wl_proxy *) %s,\n"
-			       "\t\t\t %s_%s, interface, version",
-			       ret->name, ret->name,
-			       interface->name,
-			       interface->uppercase_name,
-			       m->uppercase_name);
-		} else if (ret) {
-			/* Normal factory case, an arg has type="new_id" and
-			 * an interface is provided */
-			printf("\tstruct wl_proxy *%s;\n\n"
-			       "\t%s = wl_proxy_marshal_constructor("
-			       "(struct wl_proxy *) %s,\n"
-			       "\t\t\t %s_%s, &%s_interface",
-			       ret->name, ret->name,
-			       interface->name,
-			       interface->uppercase_name,
-			       m->uppercase_name,
-			       ret->interface_name);
+		printf("\t");
+		if (ret) {
+			printf("struct wl_proxy *%s;\n\n"
+			       "\t%s = ", ret->name, ret->name);
+		}
+		printf("wl_proxy_marshal_flags("
+		       "(struct wl_proxy *) %s,\n"
+		       "\t\t\t %s_%s",
+		       interface->name,
+		       interface->uppercase_name,
+		       m->uppercase_name);
+
+		if (ret) {
+			if (ret->interface_name) {
+				/* Normal factory case, an arg has type="new_id" and
+				 * an interface is provided */
+				printf(", &%s_interface", ret->interface_name);
+			} else {
+				/* an arg has type ="new_id" but interface is not
+				 * provided, such as in wl_registry.bind */
+				printf(", interface");
+			}
 		} else {
 			/* No args have type="new_id" */
-			printf("\twl_proxy_marshal((struct wl_proxy *) %s,\n"
-			       "\t\t\t %s_%s",
-			       interface->name,
-			       interface->uppercase_name,
-			       m->uppercase_name);
+			printf(", NULL");
 		}
+
+		if (ret && ret->interface_name == NULL)
+			printf(", version");
+		else
+			printf(", wl_proxy_get_version((struct wl_proxy *) %s)",
+			       interface->name);
+		printf(", %s", m->destructor ? "WL_MARSHAL_FLAG_DESTROY" : "0");
 
 		wl_list_for_each(a, &m->arg_list, link) {
 			if (a->type == NEW_ID) {
@@ -1272,11 +1282,6 @@ emit_stubs(struct wl_list *message_list, struct interface *interface)
 			}
 		}
 		printf(");\n");
-
-		if (m->destructor)
-			printf("\n\twl_proxy_destroy("
-			       "(struct wl_proxy *) %s);\n",
-			       interface->name);
 
 		if (ret && ret->interface_name == NULL)
 			printf("\n\treturn (void *) %s;\n", ret->name);
@@ -1364,10 +1369,17 @@ emit_enumerations(struct interface *interface)
 		}
 		printf("enum %s_%s {\n", interface->name, e->name);
 		wl_list_for_each(entry, &e->entry_list, link) {
-			if (entry->summary || entry->since > 1) {
+			desc = entry->description;
+			if (entry->summary || entry->since > 1 || desc) {
 				printf("\t/**\n");
 				if (entry->summary)
 					printf("\t * %s\n", entry->summary);
+				if (desc) {
+					printf("\t * %s\n", desc->summary);
+					printf("\t *\n");
+					if (desc->text)
+						desc_dump(desc->text, "\t * ");
+				}
 				if (entry->since > 1)
 					printf("\t * @since %d\n", entry->since);
 				printf("\t */\n");

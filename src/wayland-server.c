@@ -31,7 +31,6 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <stdbool.h>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -41,6 +40,7 @@
 #include <assert.h>
 #include <sys/time.h>
 #include <fcntl.h>
+#include <sys/eventfd.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 
@@ -79,7 +79,9 @@ struct wl_client {
 	struct wl_list link;
 	struct wl_map objects;
 	struct wl_priv_signal destroy_signal;
-	struct ucred ucred;
+	pid_t pid;
+	uid_t uid;
+	gid_t gid;
 	int error;
 	struct wl_priv_signal resource_created_signal;
 };
@@ -104,6 +106,9 @@ struct wl_display {
 
 	wl_display_global_filter_func_t global_filter;
 	void *global_filter_data;
+
+	int terminate_efd;
+	struct wl_event_source *term_source;
 };
 
 struct wl_global {
@@ -151,7 +156,7 @@ log_closure(struct wl_resource *resource,
 	struct wl_protocol_logger_message message;
 
 	if (debug_server)
-		wl_closure_print(closure, object, send);
+		wl_closure_print(closure, object, send, false, NULL);
 
 	if (!wl_list_empty(&display->protocol_loggers)) {
 		message.resource = resource;
@@ -315,7 +320,7 @@ wl_resource_post_error(struct wl_resource *resource,
 static void
 destroy_client_with_error(struct wl_client *client, const char *reason)
 {
-	wl_log("%s (pid %u)\n", reason, client->ucred.pid);
+	wl_log("%s (pid %u)\n", reason, client->pid);
 	wl_client_destroy(client);
 }
 
@@ -514,7 +519,6 @@ WL_EXPORT struct wl_client *
 wl_client_create(struct wl_display *display, int fd)
 {
 	struct wl_client *client;
-	socklen_t len;
 
 	client = zalloc(sizeof *client);
 	if (client == NULL)
@@ -529,9 +533,8 @@ wl_client_create(struct wl_display *display, int fd)
 	if (!client->source)
 		goto err_client;
 
-	len = sizeof client->ucred;
-	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED,
-		       &client->ucred, &len) < 0)
+	if (wl_os_socket_peercred(fd, &client->uid, &client->gid,
+				  &client->pid) != 0)
 		goto err_source;
 
 	client->connection = wl_connection_create(fd);
@@ -587,11 +590,11 @@ wl_client_get_credentials(struct wl_client *client,
 			  pid_t *pid, uid_t *uid, gid_t *gid)
 {
 	if (pid)
-		*pid = client->ucred.pid;
+		*pid = client->pid;
 	if (uid)
-		*uid = client->ucred.uid;
+		*uid = client->uid;
 	if (gid)
-		*gid = client->ucred.gid;
+		*gid = client->gid;
 }
 
 /** Get the file descriptor for the client
@@ -1031,6 +1034,16 @@ bind_display(struct wl_client *client, struct wl_display *display)
 	return 0;
 }
 
+static int
+handle_display_terminate(int fd, uint32_t mask, void *data) {
+	uint64_t term_event;
+
+	if (read(fd, &term_event, sizeof(term_event)) < 0 && errno != EAGAIN)
+		return -1;
+
+	return 0;
+}
+
 /** Create Wayland display object.
  *
  * \return The Wayland display object. Null if failed to create
@@ -1059,6 +1072,19 @@ wl_display_create(void)
 		return NULL;
 	}
 
+	display->terminate_efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	if (display->terminate_efd < 0)
+		goto err_eventfd;
+
+	display->term_source = wl_event_loop_add_fd(display->loop,
+						    display->terminate_efd,
+						    WL_EVENT_READABLE,
+						    handle_display_terminate,
+						    NULL);
+
+	if (display->term_source == NULL)
+		goto err_term_source;
+
 	wl_list_init(&display->global_list);
 	wl_list_init(&display->socket_list);
 	wl_list_init(&display->client_list);
@@ -1077,6 +1103,13 @@ wl_display_create(void)
 	wl_array_init(&display->additional_shm_formats);
 
 	return display;
+
+err_term_source:
+	close(display->terminate_efd);
+err_eventfd:
+	wl_event_loop_destroy(display->loop);
+	free(display);
+	return NULL;
 }
 
 static void
@@ -1136,6 +1169,10 @@ wl_display_destroy(struct wl_display *display)
 	wl_list_for_each_safe(s, next, &display->socket_list, link) {
 		wl_socket_destroy(s);
 	}
+
+	close(display->terminate_efd);
+	wl_event_source_remove(display->term_source);
+
 	wl_event_loop_destroy(display->loop);
 
 	wl_list_for_each_safe(global, gnext, &display->global_list, link)
@@ -1278,6 +1315,20 @@ wl_global_get_interface(const struct wl_global *global)
 	return global->interface;
 }
 
+/** Get the display object for the given global
+ *
+ * \param global The global object
+ * \return The display object the global is associated with.
+ *
+ * \memberof wl_global
+ * \since 1.20
+ */
+WL_EXPORT struct wl_display *
+wl_global_get_display(const struct wl_global *global)
+{
+	return global->display;
+}
+
 WL_EXPORT void *
 wl_global_get_user_data(const struct wl_global *global)
 {
@@ -1338,7 +1389,13 @@ wl_display_get_event_loop(struct wl_display *display)
 WL_EXPORT void
 wl_display_terminate(struct wl_display *display)
 {
+	int ret;
+	uint64_t terminate = 1;
+
 	display->run = 0;
+
+	ret = write(display->terminate_efd, &terminate, sizeof(terminate));
+	assert (ret >= 0 || errno == EAGAIN);
 }
 
 WL_EXPORT void
@@ -1501,8 +1558,6 @@ wl_socket_init_for_display_name(struct wl_socket *s, const char *name)
 	name_size = snprintf(s->addr.sun_path, sizeof s->addr.sun_path,
 			     "%s%s%s", runtime_dir, separator, name) + 1;
 
-	s->display_name = (s->addr.sun_path + name_size - 1) - strlen(name);
-
 	assert(name_size > 0);
 	if (name_size > (int)sizeof s->addr.sun_path) {
 		wl_log("error: socket path \"%s%s%s\" plus null terminator"
@@ -1513,6 +1568,8 @@ wl_socket_init_for_display_name(struct wl_socket *s, const char *name)
 		errno = ENAMETOOLONG;
 		return -1;
 	}
+
+	s->display_name = (s->addr.sun_path + name_size - 1) - strlen(name);
 
 	return 0;
 }

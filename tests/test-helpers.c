@@ -41,6 +41,27 @@
 
 #include "test-runner.h"
 
+#if defined(__FreeBSD__)
+#include <sys/sysctl.h>
+
+/*
+ * On FreeBSD, get file descriptor information using sysctl() since that does
+ * not depend on a mounted fdescfs (which provides /dev/fd/N for N > 2).
+ */
+int
+count_open_fds(void)
+{
+	int error;
+	int nfds;
+	int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_NFDS, 0 };
+	size_t len;
+
+	len = sizeof(nfds);
+	error = sysctl(mib, 4, &nfds, &len, NULL, 0);
+	assert(error == 0 && "sysctl KERN_PROC_NFDS failed.");
+	return nfds;
+}
+#else
 int
 count_open_fds(void)
 {
@@ -48,8 +69,12 @@ count_open_fds(void)
 	struct dirent *ent;
 	int count = 0;
 
-	dir = opendir("/proc/self/fd");
-	assert(dir && "opening /proc/self/fd failed.");
+	/*
+	 * Using /dev/fd instead of /proc/self/fd should allow this code to
+	 * work on non-Linux operating systems.
+	 */
+	dir = opendir("/dev/fd");
+	assert(dir && "opening /dev/fd failed.");
 
 	errno = 0;
 	while ((ent = readdir(dir))) {
@@ -58,12 +83,13 @@ count_open_fds(void)
 			continue;
 		count++;
 	}
-	assert(errno == 0 && "reading /proc/self/fd failed.");
+	assert(errno == 0 && "reading /dev/fd failed.");
 
 	closedir(dir);
 
 	return count;
 }
+#endif
 
 void
 exec_fd_leak_check(int nr_expected_fds)

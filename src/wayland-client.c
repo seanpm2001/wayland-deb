@@ -514,11 +514,25 @@ proxy_destroy(struct wl_proxy *proxy)
 	wl_proxy_unref(proxy);
 }
 
+static void
+wl_proxy_destroy_caller_locks(struct wl_proxy *proxy)
+{
+	if (proxy->flags & WL_PROXY_FLAG_WRAPPER)
+		wl_abort("Tried to destroy wrapper with wl_proxy_destroy()\n");
+
+	proxy_destroy(proxy);
+}
+
 /** Destroy a proxy object
  *
  * \param proxy The proxy to be destroyed
  *
  * \c proxy must not be a proxy wrapper.
+ *
+ * \note This function will abort in response to egregious
+ * errors, and will do so with the display lock held. This means
+ * SIGABRT handlers must not perform any actions that would
+ * attempt to take that lock, or a deadlock would occur.
  *
  * \memberof wl_proxy
  */
@@ -527,11 +541,10 @@ wl_proxy_destroy(struct wl_proxy *proxy)
 {
 	struct wl_display *display = proxy->display;
 
-	if (proxy->flags & WL_PROXY_FLAG_WRAPPER)
-		wl_abort("Tried to destroy wrapper with wl_proxy_destroy()\n");
-
 	pthread_mutex_lock(&display->mutex);
-	proxy_destroy(proxy);
+
+	wl_proxy_destroy_caller_locks(proxy);
+
 	pthread_mutex_unlock(&display->mutex);
 }
 
@@ -725,11 +738,93 @@ wl_proxy_marshal_array_constructor_versioned(struct wl_proxy *proxy,
 					     const struct wl_interface *interface,
 					     uint32_t version)
 {
+	return wl_proxy_marshal_array_flags(proxy, opcode, interface, version, 0, args);
+}
+
+/** Prepare a request to be sent to the compositor
+ *
+ * \param proxy The proxy object
+ * \param opcode Opcode of the request to be sent
+ * \param interface The interface to use for the new proxy
+ * \param version The protocol object version of the new proxy
+ * \param flags Flags that modify marshalling behaviour
+ * \param ... Extra arguments for the given request
+ * \return A new wl_proxy for the new_id argument or NULL on error
+ *
+ * Translates the request given by opcode and the extra arguments into the
+ * wire format and write it to the connection buffer.
+ *
+ * For new-id arguments, this function will allocate a new wl_proxy
+ * and send the ID to the server.  The new wl_proxy will be returned
+ * on success or NULL on error with errno set accordingly.  The newly
+ * created proxy will have the version specified.
+ *
+ * The flag WL_MARSHAL_FLAG_DESTROY may be passed to ensure the proxy
+ * is destroyed atomically with the marshalling in order to prevent
+ * races that can occur if the display lock is dropped between the
+ * marshal and destroy operations.
+ *
+ * \note This should not normally be used by non-generated code.
+ *
+ * \memberof wl_proxy
+ */
+WL_EXPORT struct wl_proxy *
+wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
+		       const struct wl_interface *interface, uint32_t version,
+		       uint32_t flags, ...)
+{
+	union wl_argument args[WL_CLOSURE_MAX_ARGS];
+	va_list ap;
+
+	va_start(ap, flags);
+	wl_argument_from_va_list(proxy->object.interface->methods[opcode].signature,
+				 args, WL_CLOSURE_MAX_ARGS, ap);
+	va_end(ap);
+
+	return wl_proxy_marshal_array_flags(proxy, opcode, interface, version, flags, args);
+}
+
+/** Prepare a request to be sent to the compositor
+ *
+ * \param proxy The proxy object
+ * \param opcode Opcode of the request to be sent
+ * \param interface The interface to use for the new proxy
+ * \param version The protocol object version for the new proxy
+ * \param flags Flags that modify marshalling behaviour
+ * \param args Extra arguments for the given request
+ *
+ * Translates the request given by opcode and the extra arguments into the
+ * wire format and write it to the connection buffer.  This version takes an
+ * array of the union type wl_argument.
+ *
+ * For new-id arguments, this function will allocate a new wl_proxy
+ * and send the ID to the server.  The new wl_proxy will be returned
+ * on success or NULL on error with errno set accordingly.  The newly
+ * created proxy will have the version specified.
+ *
+ * The flag WL_MARSHAL_FLAG_DESTROY may be passed to ensure the proxy
+ * is destroyed atomically with the marshalling in order to prevent
+ * races that can occur if the display lock is dropped between the
+ * marshal and destroy operations.
+ *
+ * \note This is intended to be used by language bindings and not in
+ * non-generated code.
+ *
+ * \sa wl_proxy_marshal_flags()
+ *
+ * \memberof wl_proxy
+ */
+WL_EXPORT struct wl_proxy *
+wl_proxy_marshal_array_flags(struct wl_proxy *proxy, uint32_t opcode,
+			     const struct wl_interface *interface, uint32_t version,
+			     uint32_t flags, union wl_argument *args)
+{
 	struct wl_closure *closure;
 	struct wl_proxy *new_proxy = NULL;
 	const struct wl_message *message;
+	struct wl_display *disp = proxy->display;
 
-	pthread_mutex_lock(&proxy->display->mutex);
+	pthread_mutex_lock(&disp->mutex);
 
 	message = &proxy->object.interface->methods[opcode];
 	if (interface) {
@@ -752,7 +847,7 @@ wl_proxy_marshal_array_constructor_versioned(struct wl_proxy *proxy,
 	}
 
 	if (debug_client)
-		wl_closure_print(closure, &proxy->object, true);
+		wl_closure_print(closure, &proxy->object, true, false, NULL);
 
 	if (wl_closure_send(closure, proxy->display->connection)) {
 		wl_log("Error sending request: %s\n", strerror(errno));
@@ -762,7 +857,10 @@ wl_proxy_marshal_array_constructor_versioned(struct wl_proxy *proxy,
 	wl_closure_destroy(closure);
 
  err_unlock:
-	pthread_mutex_unlock(&proxy->display->mutex);
+	if (flags & WL_MARSHAL_FLAG_DESTROY)
+		wl_proxy_destroy_caller_locks(proxy);
+
+	pthread_mutex_unlock(&disp->mutex);
 
 	return new_proxy;
 }
@@ -1148,7 +1246,9 @@ wl_display_connect(const char *name)
 		errno = prev_errno;
 
 		flags = fcntl(fd, F_GETFD);
-		if (flags != -1)
+		if (flags == -1 && errno == EBADF)
+			return NULL;
+		else if (flags != -1)
 			fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 		unsetenv("WAYLAND_SOCKET");
 	} else {
@@ -1358,6 +1458,9 @@ queue_event(struct wl_display *display, int len)
 	struct wl_closure *closure;
 	const struct wl_message *message;
 	struct wl_event_queue *queue;
+	struct timespec tp;
+	unsigned int time;
+	int num_zombie_fds;
 
 	wl_connection_copy(display->connection, p, sizeof p);
 	id = p[0];
@@ -1371,10 +1474,23 @@ queue_event(struct wl_display *display, int len)
 	proxy = wl_map_lookup(&display->objects, id);
 	if (!proxy || wl_object_is_zombie(&display->objects, id)) {
 		struct wl_zombie *zombie = wl_map_lookup(&display->objects, id);
+		num_zombie_fds = (zombie && opcode < zombie->event_count) ?
+			zombie->fd_count[opcode] : 0;
 
-		if (zombie && zombie->fd_count[opcode])
+		if (debug_client) {
+			clock_gettime(CLOCK_REALTIME, &tp);
+			time = (tp.tv_sec * 1000000L) + (tp.tv_nsec / 1000);
+
+			fprintf(stderr, "[%7u.%03u] discarded [%s]@%d.[event %d]"
+				"(%d fd, %d byte)\n",
+				time / 1000, time % 1000,
+				zombie ? "zombie" : "unknown",
+				id, opcode,
+				num_zombie_fds, size);
+		}
+		if (num_zombie_fds > 0)
 			wl_connection_close_fds_in(display->connection,
-						   zombie->fd_count[opcode]);
+						   num_zombie_fds);
 
 		wl_connection_consume(display->connection, size);
 		return size;
@@ -1415,6 +1531,19 @@ queue_event(struct wl_display *display, int len)
 	return size;
 }
 
+static uint32_t
+id_from_object(union wl_argument *arg)
+{
+	struct wl_proxy *proxy;
+
+	if (arg->o) {
+		proxy = (struct wl_proxy *)arg->o;
+		return proxy->object.id;
+	}
+
+	return 0;
+}
+
 static void
 dispatch_event(struct wl_display *display, struct wl_event_queue *queue)
 {
@@ -1433,6 +1562,8 @@ dispatch_event(struct wl_display *display, struct wl_event_queue *queue)
 	proxy = closure->proxy;
 	proxy_destroyed = !!(proxy->flags & WL_PROXY_FLAG_DESTROYED);
 	if (proxy_destroyed) {
+		if (debug_client)
+			wl_closure_print(closure, &proxy->object, false, true, id_from_object);
 		destroy_queued_closure(closure);
 		return;
 	}
@@ -1441,13 +1572,13 @@ dispatch_event(struct wl_display *display, struct wl_event_queue *queue)
 
 	if (proxy->dispatcher) {
 		if (debug_client)
-			wl_closure_print(closure, &proxy->object, false);
+			wl_closure_print(closure, &proxy->object, false, false, id_from_object);
 
 		wl_closure_dispatch(closure, proxy->dispatcher,
 				    &proxy->object, opcode);
 	} else if (proxy->object.implementation) {
 		if (debug_client)
-			wl_closure_print(closure, &proxy->object, false);
+			wl_closure_print(closure, &proxy->object, false, false, id_from_object);
 
 		wl_closure_invoke(closure, WL_CLOSURE_INVOKE_CLIENT,
 				  &proxy->object, opcode, proxy->user_data);
@@ -2177,10 +2308,12 @@ wl_proxy_get_class(struct wl_proxy *proxy)
 WL_EXPORT void
 wl_proxy_set_queue(struct wl_proxy *proxy, struct wl_event_queue *queue)
 {
-	if (queue)
+	if (queue) {
+		assert(proxy->display == queue->display);
 		proxy->queue = queue;
-	else
+	} else {
 		proxy->queue = &proxy->display->default_queue;
+	}
 }
 
 /** Create a proxy wrapper for making queue assignments thread-safe
