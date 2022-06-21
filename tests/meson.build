@@ -1,3 +1,7 @@
+if not get_option('libraries')
+	error('-Dtests=true requires -Dlibraries=true')
+endif
+
 test_runner = static_library(
 	'test-runner',
 	sources: [
@@ -65,7 +69,7 @@ executable(
 	dependencies: test_runner_dep
 )
 
-if add_languages('cpp')
+if add_languages('cpp', native: false)
 	test(
 		'cpp-compile-test',
 		executable(
@@ -77,7 +81,7 @@ if add_languages('cpp')
 	)
 endif
 
-sed_path = find_program('sed').path()
+sed_path = find_program('sed').full_path()
 
 if get_option('scanner')
 	test(

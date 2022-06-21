@@ -149,9 +149,9 @@
 	  <term>string</term>
 	  <listitem>
 	    <para>
-	      Starts with an unsigned 32-bit length, followed by the
-	      string contents, including terminating null byte, then padding
-	      to a 32-bit boundary.
+	      Starts with an unsigned 32-bit length (including null terminator),
+	      followed by the string contents, including terminating null byte,
+	      then padding to a 32-bit boundary.
 	    </para>
 	  </listitem>
 	</varlistentry>
@@ -193,6 +193,21 @@
 	  </listitem>
 	</varlistentry>
       </variablelist>
+    </para>
+    <para>
+      The protocol does not specify the exact position of the ancillary data
+      in the stream, except that the order of file descriptors is the same as
+      the order of messages and <code>fd</code> arguments within messages on
+      the wire.
+    </para>
+    <para>
+      In particular, it means that any byte of the stream, even the message
+      header, may carry the ancillary data with file descriptors.
+    </para>
+    <para>
+      Clients and compositors should queue incoming data until they have
+      whole messages to process, as file descriptors may arrive earlier
+      or later than the corresponding data bytes.
     </para>
   </section>
   <xi:include href="ProtocolInterfaces.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>

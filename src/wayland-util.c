@@ -24,6 +24,7 @@
  * SOFTWARE.
  */
 
+#include <errno.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -197,6 +198,7 @@ wl_map_insert_new(struct wl_map *map, uint32_t flags, void *data)
 	union map_entry *start, *entry;
 	struct wl_array *entries;
 	uint32_t base;
+	uint32_t count;
 
 	if (map->side == WL_MAP_CLIENT_SIDE) {
 		entries = &map->client_entries;
@@ -217,10 +219,25 @@ wl_map_insert_new(struct wl_map *map, uint32_t flags, void *data)
 		start = entries->data;
 	}
 
+	/* wl_array only grows, so if we have too many objects at
+	 * this point there's no way to clean up. We could be more
+	 * pro-active about trying to avoid this allocation, but
+	 * it doesn't really matter because at this point there is
+	 * nothing to be done but disconnect the client and delete
+	 * the whole array either way.
+	 */
+	count = entry - start;
+	if (count > WL_MAP_MAX_OBJECTS) {
+		/* entry->data is freshly malloced garbage, so we'd
+		 * better make it a NULL so wl_map_for_each doesn't
+		 * dereference it later. */
+		entry->data = NULL;
+		return 0;
+	}
 	entry->data = data;
 	entry->next |= (flags & 0x1) << 1;
 
-	return (entry - start) + base;
+	return count + base;
 }
 
 int
@@ -237,12 +254,19 @@ wl_map_insert_at(struct wl_map *map, uint32_t flags, uint32_t i, void *data)
 		i -= WL_SERVER_ID_START;
 	}
 
-	count = entries->size / sizeof *start;
-	if (count < i)
+	if (i > WL_MAP_MAX_OBJECTS)
 		return -1;
 
-	if (count == i)
-		wl_array_add(entries, sizeof *start);
+	count = entries->size / sizeof *start;
+	if (count < i) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (count == i) {
+		if (!wl_array_add(entries, sizeof *start))
+			return -1;
+	}
 
 	start = entries->data;
 	start[i].data = data;
@@ -259,30 +283,41 @@ wl_map_reserve_new(struct wl_map *map, uint32_t i)
 	struct wl_array *entries;
 
 	if (i < WL_SERVER_ID_START) {
-		if (map->side == WL_MAP_CLIENT_SIDE)
+		if (map->side == WL_MAP_CLIENT_SIDE) {
+			errno = EINVAL;
 			return -1;
+		}
 
 		entries = &map->client_entries;
 	} else {
-		if (map->side == WL_MAP_SERVER_SIDE)
+		if (map->side == WL_MAP_SERVER_SIDE) {
+			errno = EINVAL;
 			return -1;
+		}
 
 		entries = &map->server_entries;
 		i -= WL_SERVER_ID_START;
 	}
 
-	count = entries->size / sizeof *start;
-
-	if (count < i)
+	if (i > WL_MAP_MAX_OBJECTS)
 		return -1;
 
+	count = entries->size / sizeof *start;
+	if (count < i) {
+		errno = EINVAL;
+		return -1;
+	}
+
 	if (count == i) {
-		wl_array_add(entries, sizeof *start);
+		if (!wl_array_add(entries, sizeof *start))
+			return -1;
+
 		start = entries->data;
 		start[i].data = NULL;
 	} else {
 		start = entries->data;
 		if (start[i].data != NULL) {
+			errno = EINVAL;
 			return -1;
 		}
 	}

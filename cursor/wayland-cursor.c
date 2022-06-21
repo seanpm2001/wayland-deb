@@ -92,7 +92,7 @@ shm_pool_resize(struct shm_pool *pool, int size)
 
 	pool->data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED,
 			  pool->fd, 0);
-	if (pool->data == (void *)-1)
+	if (pool->data == MAP_FAILED)
 		return 0;
 	pool->size = size;
 
@@ -274,7 +274,7 @@ load_fallback_theme(struct wl_cursor_theme *theme)
 }
 
 static struct wl_cursor *
-wl_cursor_create_from_xcursor_images(XcursorImages *images,
+wl_cursor_create_from_xcursor_images(struct xcursor_images *images,
 				     struct wl_cursor_theme *theme)
 {
 	struct cursor *cursor;
@@ -335,13 +335,13 @@ wl_cursor_create_from_xcursor_images(XcursorImages *images,
 }
 
 static void
-load_callback(XcursorImages *images, void *data)
+load_callback(struct xcursor_images *images, void *data)
 {
 	struct wl_cursor_theme *theme = data;
 	struct wl_cursor *cursor;
 
 	if (wl_cursor_theme_get_cursor(theme, images->name)) {
-		XcursorImagesDestroy(images);
+		xcursor_images_destroy(images);
 		return;
 	}
 
@@ -361,7 +361,7 @@ load_callback(XcursorImages *images, void *data)
 		}
 	}
 
-	XcursorImagesDestroy(images);
+	xcursor_images_destroy(images);
 }
 
 /** Load a cursor theme to memory shared with the compositor

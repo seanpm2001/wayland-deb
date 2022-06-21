@@ -1,3 +1,7 @@
+if not (get_option('scanner') or get_option('libraries'))
+	error('Either -Dscanner=true or -Dlibraries=true is required')
+endif
+
 wayland_version_h = configuration_data()
 wayland_version_h.set('WAYLAND_VERSION', meson.project_version())
 wayland_version_h.set('WAYLAND_VERSION_MAJOR', wayland_version[0].to_int())
@@ -67,11 +71,15 @@ if get_option('scanner')
 		],
 		filebase: 'wayland-scanner'
 	)
+
+	if meson.can_run_host_binaries()
+		meson.override_find_program('wayland-scanner', wayland_scanner)
+	endif
 endif
 
 if meson.is_cross_build() or not get_option('scanner')
 	scanner_dep = dependency('wayland-scanner', native: true, version: meson.project_version())
-	wayland_scanner_for_build = find_program(scanner_dep.get_pkgconfig_variable('wayland_scanner'))
+	wayland_scanner_for_build = find_program(scanner_dep.get_variable(pkgconfig: 'wayland_scanner'))
 else
 	wayland_scanner_for_build = wayland_scanner
 endif

@@ -65,10 +65,12 @@ struct wl_shm_pool {
 	char *data;
 	ssize_t size;
 	ssize_t new_size;
+#ifndef MREMAP_MAYMOVE
 	/* The following three fields are needed for mremap() emulation. */
 	int mmap_fd;
 	int mmap_flags;
 	int mmap_prot;
+#endif
 	bool sigbus_is_impossible;
 };
 
@@ -153,7 +155,9 @@ shm_pool_unref(struct wl_shm_pool *pool, bool external)
 		return;
 
 	munmap(pool->data, pool->size);
+#ifndef MREMAP_MAYMOVE
 	close(pool->mmap_fd);
+#endif
 	free(pool);
 }
 
@@ -223,7 +227,7 @@ shm_pool_create_buffer(struct wl_client *client, struct wl_resource *resource,
 		return;
 	}
 
-	buffer = malloc(sizeof *buffer);
+	buffer = zalloc(sizeof *buffer);
 	if (buffer == NULL) {
 		wl_client_post_no_memory(client);
 		return;
@@ -312,7 +316,7 @@ shm_create_pool(struct wl_client *client, struct wl_resource *resource,
 		goto err_close;
 	}
 
-	pool = malloc(sizeof *pool);
+	pool = zalloc(sizeof *pool);
 	if (pool == NULL) {
 		wl_client_post_no_memory(client);
 		goto err_close;
@@ -344,10 +348,14 @@ shm_create_pool(struct wl_client *client, struct wl_resource *resource,
 				       strerror(errno));
 		goto err_free;
 	}
+#ifndef MREMAP_MAYMOVE
 	/* We may need to keep the fd, prot and flags to emulate mremap(). */
 	pool->mmap_fd = fd;
 	pool->mmap_prot = prot;
 	pool->mmap_flags = flags;
+#else
+	close(fd);
+#endif
 	pool->resource =
 		wl_resource_create(client, &wl_shm_pool_interface, 1, id);
 	if (!pool->resource) {

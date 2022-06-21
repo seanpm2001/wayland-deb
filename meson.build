@@ -1,11 +1,12 @@
 project(
 	'wayland', 'c',
-	version: '1.20.0',
+	version: '1.20.92',
 	license: 'MIT',
-	meson_version: '>= 0.52.1',
+	meson_version: '>= 0.56.0',
 	default_options: [
 		'warning_level=2',
-		'buildtype=debugoptimized'
+		'buildtype=debugoptimized',
+		'c_std=c99',
 	]
 )
 wayland_version = meson.project_version().split('.')
@@ -13,6 +14,12 @@ wayland_version = meson.project_version().split('.')
 config_h = configuration_data()
 config_h.set_quoted('PACKAGE', meson.project_name())
 config_h.set_quoted('PACKAGE_VERSION', meson.project_version())
+
+cc_args = []
+if host_machine.system() != 'freebsd'
+	cc_args += ['-D_POSIX_C_SOURCE=200809L']
+endif
+add_project_arguments(cc_args, language: 'c')
 
 compiler_flags = [
 	'-Wno-unused-parameter',
@@ -79,7 +86,7 @@ if get_option('libraries')
 	]
 
 	foreach d: decls
-		if not cc.has_header_symbol(d['header'], d['symbol'], dependencies: epoll_dep)
+		if not cc.has_header_symbol(d['header'], d['symbol'], dependencies: epoll_dep, args: cc_args)
 			error('@0@ is needed to compile Wayland libraries'.format(d['symbol']))
 		endif
 	endforeach
@@ -87,7 +94,7 @@ if get_option('libraries')
 	rt_dep = []
 	if not cc.has_function('clock_gettime', prefix: '#include <time.h>')
 		rt_dep = cc.find_library('rt')
-		if not cc.has_function('clock_gettime', prefix: '#include <time.h>', dependencies: rt_dep)
+		if not cc.has_function('clock_gettime', prefix: '#include <time.h>', dependencies: rt_dep, args: cc_args)
 			error('clock_gettime not found')
 		endif
 	endif
@@ -111,12 +118,12 @@ subdir('src')
 if get_option('libraries')
 	subdir('cursor')
 	subdir('egl')
-	if get_option('tests')
-		subdir('tests')
-	endif
-	if get_option('documentation')
-		subdir('doc')
-	endif
+endif
+if get_option('tests')
+	subdir('tests')
+endif
+if get_option('documentation')
+	subdir('doc')
 endif
 
 if get_option('scanner')

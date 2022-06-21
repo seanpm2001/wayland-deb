@@ -343,7 +343,7 @@ wl_display_create_queue(struct wl_display *display)
 {
 	struct wl_event_queue *queue;
 
-	queue = malloc(sizeof *queue);
+	queue = zalloc(sizeof *queue);
 	if (queue == NULL)
 		return NULL;
 
@@ -430,6 +430,10 @@ proxy_create(struct wl_proxy *factory, const struct wl_interface *interface,
 	proxy->version = version;
 
 	proxy->object.id = wl_map_insert_new(&display->objects, 0, proxy);
+	if (proxy->object.id == 0) {
+		free(proxy);
+		return NULL;
+	}
 
 	return proxy;
 }
@@ -485,7 +489,10 @@ wl_proxy_create_for_id(struct wl_proxy *factory,
 	proxy->refcount = 1;
 	proxy->version = factory->version;
 
-	wl_map_insert_at(&display->objects, 0, id, proxy);
+	if (wl_map_insert_at(&display->objects, 0, id, proxy) == -1) {
+		free(proxy);
+		return NULL;
+	}
 
 	return proxy;
 }
@@ -1069,8 +1076,8 @@ connect_to_socket(const char *name)
 	path_is_absolute = name[0] == '/';
 
 	runtime_dir = getenv("XDG_RUNTIME_DIR");
-	if (!runtime_dir && !path_is_absolute) {
-		wl_log("error: XDG_RUNTIME_DIR not set in the environment.\n");
+	if (((!runtime_dir || runtime_dir[0] != '/') && !path_is_absolute)) {
+		wl_log("error: XDG_RUNTIME_DIR is invalid or not set in the environment.\n");
 		/* to prevent programs reporting
 		 * "failed to create display: Success" */
 		errno = ENOENT;
@@ -1155,11 +1162,16 @@ wl_display_connect_to_fd(int fd)
 	pthread_cond_init(&display->reader_cond, NULL);
 	display->reader_count = 0;
 
-	wl_map_insert_new(&display->objects, 0, NULL);
+	if (wl_map_insert_at(&display->objects, 0, 0, NULL) == -1)
+		goto err_connection;
 
-	display->proxy.object.interface = &wl_display_interface;
 	display->proxy.object.id =
 		wl_map_insert_new(&display->objects, 0, display);
+
+	if (display->proxy.object.id == 0)
+		goto err_connection;
+
+	display->proxy.object.interface = &wl_display_interface;
 	display->proxy.display = display;
 	display->proxy.object.implementation = (void(**)(void)) &display_listener;
 	display->proxy.user_data = display;
@@ -2299,6 +2311,19 @@ wl_proxy_get_class(struct wl_proxy *proxy)
  * queued in \c queue from now. If queue is NULL, then the display's
  * default queue is set to the proxy.
  *
+ * In order to guarantee proper handing of all events which were queued
+ * before the queue change takes effect, it is required to dispatch the
+ * proxy's old event queue after setting a new event queue.
+ *
+ * This is particularly important for multi-threaded setups, where it is
+ * possible for events to be queued to the proxy's old queue from a
+ * different thread during the invocation of this function.
+ *
+ * To ensure that all events for a newly created proxy are dispatched
+ * on a particular queue, it is necessary to use a proxy wrapper if
+ * events are read and dispatched on more than one thread. See
+ * wl_proxy_create_wrapper() for more details.
+ *
  * \note By default, the queue set in proxy is the one inherited from parent.
  *
  * \sa wl_display_dispatch_queue()
@@ -2308,12 +2333,16 @@ wl_proxy_get_class(struct wl_proxy *proxy)
 WL_EXPORT void
 wl_proxy_set_queue(struct wl_proxy *proxy, struct wl_event_queue *queue)
 {
+	pthread_mutex_lock(&proxy->display->mutex);
+
 	if (queue) {
 		assert(proxy->display == queue->display);
 		proxy->queue = queue;
 	} else {
 		proxy->queue = &proxy->display->default_queue;
 	}
+
+	pthread_mutex_unlock(&proxy->display->mutex);
 }
 
 /** Create a proxy wrapper for making queue assignments thread-safe

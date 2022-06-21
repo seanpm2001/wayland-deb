@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #ifdef HAVE_MEMFD_CREATE
@@ -118,6 +119,7 @@ os_create_anonymous_file(off_t size)
 	static const char template[] = "/wayland-cursor-shared-XXXXXX";
 	const char *path;
 	char *name;
+	size_t name_size;
 	int fd;
 
 #ifdef HAVE_MEMFD_CREATE
@@ -134,17 +136,17 @@ os_create_anonymous_file(off_t size)
 #endif
 	{
 		path = getenv("XDG_RUNTIME_DIR");
-		if (!path) {
+		if (!path || path[0] != '/') {
 			errno = ENOENT;
 			return -1;
 		}
 
-		name = malloc(strlen(path) + sizeof(template));
+		name_size = strlen(path) + sizeof(template);
+		name = malloc(name_size);
 		if (!name)
 			return -1;
 
-		strcpy(name, path);
-		strcat(name, template);
+		snprintf(name, name_size, "%s%s", path, template);
 
 		fd = create_tmpfile_cloexec(name);
 
@@ -166,7 +168,7 @@ int
 os_resize_anonymous_file(int fd, off_t size)
 {
 #ifdef HAVE_POSIX_FALLOCATE
-	/* 
+	/*
 	 * Filesystems that do support fallocate will return EINVAL or
 	 * EOPNOTSUPP. In this case we need to fall back to ftruncate
 	 */
