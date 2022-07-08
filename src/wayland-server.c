@@ -578,6 +578,9 @@ err_client:
  * SO_PEERCRED, on the client socket fd.  All the pointers can be
  * NULL, if the caller is not interested in a particular ID.
  *
+ * Note, process IDs are subject to race conditions and are not a reliable way
+ * to identify a client.
+ *
  * Be aware that for clients that a compositor forks and execs and
  * then connects using socketpair(), this function will return the
  * credentials for the compositor.  The credentials for the socketpair
@@ -1205,6 +1208,10 @@ wl_display_destroy(struct wl_display *display)
  * Setting the filter NULL will result in all globals being
  * advertised to all clients. The default is no filter.
  *
+ * The filter should be installed before any client connects and should always
+ * take the same decision given a client and a global. Not doing so will result
+ * in inconsistent filtering and broken wl_registry event sequences.
+ *
  * \memberof wl_display
  */
 WL_EXPORT void
@@ -1252,11 +1259,12 @@ wl_global_create(struct wl_display *display,
 	wl_list_insert(display->global_list.prev, &global->link);
 
 	wl_list_for_each(resource, &display->registry_resource_list, link)
-		wl_resource_post_event(resource,
-				       WL_REGISTRY_GLOBAL,
-				       global->name,
-				       global->interface->name,
-				       global->version);
+		if (wl_global_is_visible(resource->client, global))
+			wl_resource_post_event(resource,
+					       WL_REGISTRY_GLOBAL,
+					       global->name,
+					       global->interface->name,
+					       global->version);
 
 	return global;
 }
@@ -1294,8 +1302,9 @@ wl_global_remove(struct wl_global *global)
 			 global->name);
 
 	wl_list_for_each(resource, &display->registry_resource_list, link)
-		wl_resource_post_event(resource, WL_REGISTRY_GLOBAL_REMOVE,
-				       global->name);
+		if (wl_global_is_visible(resource->client, global))
+			wl_resource_post_event(resource, WL_REGISTRY_GLOBAL_REMOVE,
+					       global->name);
 
 	global->removed = true;
 }
