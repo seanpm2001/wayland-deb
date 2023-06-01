@@ -1,3 +1,9 @@
+wayland (1.21.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Héctor Orón Martínez <zumbi@debian.org>  Fri, 08 Jul 2022 18:26:04 +0200
+
 wayland (1.20.92-1) experimental; urgency=medium
 
   * Prepare for next upstream release.
