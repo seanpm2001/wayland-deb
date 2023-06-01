@@ -79,6 +79,7 @@ struct wl_client {
 	struct wl_list link;
 	struct wl_map objects;
 	struct wl_priv_signal destroy_signal;
+	struct wl_priv_signal destroy_late_signal;
 	pid_t pid;
 	uid_t uid;
 	gid_t gid;
@@ -90,7 +91,7 @@ struct wl_display {
 	struct wl_event_loop *loop;
 	int run;
 
-	uint32_t id;
+	uint32_t next_global_name;
 	uint32_t serial;
 
 	struct wl_list registry_resource_list;
@@ -547,6 +548,7 @@ wl_client_create(struct wl_display *display, int fd)
 		goto err_map;
 
 	wl_priv_signal_init(&client->destroy_signal);
+	wl_priv_signal_init(&client->destroy_late_signal);
 	if (bind_display(client, display) < 0)
 		goto err_map;
 
@@ -577,6 +579,9 @@ err_client:
  * for the given client.  The credentials come from getsockopt() with
  * SO_PEERCRED, on the client socket fd.  All the pointers can be
  * NULL, if the caller is not interested in a particular ID.
+ *
+ * Note, process IDs are subject to race conditions and are not a reliable way
+ * to identify a client.
  *
  * Be aware that for clients that a compositor forks and execs and
  * then connects using socketpair(), this function will return the
@@ -861,6 +866,17 @@ wl_resource_get_class(struct wl_resource *resource)
 	return resource->object.interface->name;
 }
 
+/**
+ * Add a listener to be called at the beginning of wl_client destruction
+ *
+ * The listener provided will be called when wl_client destroy has begun,
+ * before any of that client's resources have been destroyed.
+ *
+ * There is no requirement to remove the link of the wl_listener when the
+ * signal is emitted.
+ *
+ * \memberof wl_client
+ */
 WL_EXPORT void
 wl_client_add_destroy_listener(struct wl_client *client,
 			       struct wl_listener *listener)
@@ -875,6 +891,32 @@ wl_client_get_destroy_listener(struct wl_client *client,
 	return wl_priv_signal_get(&client->destroy_signal, notify);
 }
 
+/**
+ * Add a listener to be called at the end of wl_client destruction
+ *
+ * The listener provided will be called when wl_client destroy is nearly
+ * complete, after all of that client's resources have been destroyed.
+ *
+ * There is no requirement to remove the link of the wl_listener when the
+ * signal is emitted.
+ *
+ * \memberof wl_client
+ * \since 1.22.0
+ */
+WL_EXPORT void
+wl_client_add_destroy_late_listener(struct wl_client *client,
+				    struct wl_listener *listener)
+{
+	wl_priv_signal_add(&client->destroy_late_signal, listener);
+}
+
+WL_EXPORT struct wl_listener *
+wl_client_get_destroy_late_listener(struct wl_client *client,
+				    wl_notify_func_t notify)
+{
+	return wl_priv_signal_get(&client->destroy_late_signal, notify);
+}
+
 WL_EXPORT void
 wl_client_destroy(struct wl_client *client)
 {
@@ -887,6 +929,9 @@ wl_client_destroy(struct wl_client *client)
 	wl_map_release(&client->objects);
 	wl_event_source_remove(client->source);
 	close(wl_connection_destroy(client->connection));
+
+	wl_priv_signal_final_emit(&client->destroy_late_signal, client);
+
 	wl_list_remove(&client->link);
 	wl_list_remove(&client->resource_created_signal.listener_list);
 	free(client);
@@ -1094,7 +1139,7 @@ wl_display_create(void)
 	wl_priv_signal_init(&display->destroy_signal);
 	wl_priv_signal_init(&display->create_client_signal);
 
-	display->id = 1;
+	display->next_global_name = 1;
 	display->serial = 0;
 
 	display->global_filter = NULL;
@@ -1147,7 +1192,6 @@ wl_socket_alloc(void)
 /** Destroy Wayland display object.
  *
  * \param display The Wayland display object which should be destroyed.
- * \return None.
  *
  * This function emits the wl_display destroy signal, releases
  * all the sockets added to this display, free's all the globals associated
@@ -1190,7 +1234,6 @@ wl_display_destroy(struct wl_display *display)
  * \param display The Wayland display object.
  * \param filter  The global filter function.
  * \param data User data to be associated with the global filter.
- * \return None.
  *
  * Set a filter for the wl_display to advertise or hide global objects
  * to clients.
@@ -1204,6 +1247,10 @@ wl_display_destroy(struct wl_display *display)
  *
  * Setting the filter NULL will result in all globals being
  * advertised to all clients. The default is no filter.
+ *
+ * The filter should be installed before any client connects and should always
+ * take the same decision given a client and a global. Not doing so will result
+ * in inconsistent filtering and broken wl_registry event sequences.
  *
  * \memberof wl_display
  */
@@ -1238,12 +1285,17 @@ wl_global_create(struct wl_display *display,
 		return NULL;
 	}
 
+	if (display->next_global_name >= UINT32_MAX) {
+		wl_log("wl_global_create: ran out of global names\n");
+		return NULL;
+	}
+
 	global = zalloc(sizeof *global);
 	if (global == NULL)
 		return NULL;
 
 	global->display = display;
-	global->name = display->id++;
+	global->name = display->next_global_name++;
 	global->interface = interface;
 	global->version = version;
 	global->data = data;
@@ -1252,11 +1304,12 @@ wl_global_create(struct wl_display *display,
 	wl_list_insert(display->global_list.prev, &global->link);
 
 	wl_list_for_each(resource, &display->registry_resource_list, link)
-		wl_resource_post_event(resource,
-				       WL_REGISTRY_GLOBAL,
-				       global->name,
-				       global->interface->name,
-				       global->version);
+		if (wl_global_is_visible(resource->client, global))
+			wl_resource_post_event(resource,
+					       WL_REGISTRY_GLOBAL,
+					       global->name,
+					       global->interface->name,
+					       global->version);
 
 	return global;
 }
@@ -1294,8 +1347,9 @@ wl_global_remove(struct wl_global *global)
 			 global->name);
 
 	wl_list_for_each(resource, &display->registry_resource_list, link)
-		wl_resource_post_event(resource, WL_REGISTRY_GLOBAL_REMOVE,
-				       global->name);
+		if (wl_global_is_visible(resource->client, global))
+			wl_resource_post_event(resource, WL_REGISTRY_GLOBAL_REMOVE,
+					       global->name);
 
 	global->removed = true;
 }
@@ -1313,6 +1367,23 @@ WL_EXPORT const struct wl_interface *
 wl_global_get_interface(const struct wl_global *global)
 {
 	return global->interface;
+}
+
+/** Get the name of the global.
+ *
+ * \param global The global object.
+ * \param client Client for which to look up the global.
+ * \return The name of the global, or 0 if the global is not visible to the
+ *         client.
+ *
+ * \memberof wl_global
+ * \since 1.22
+ */
+WL_EXPORT uint32_t
+wl_global_get_name(const struct wl_global *global,
+		   const struct wl_client *client)
+{
+	return wl_global_is_visible(client, global) ? global->name : 0;
 }
 
 /** Get the version of the given global.
@@ -1626,7 +1697,7 @@ wl_display_add_socket_auto(struct wl_display *display)
 {
 	struct wl_socket *s;
 	int displayno = 0;
-	char display_name[16] = "";
+	char display_name[20] = "";
 
 	/* A reasonable number of maximum default sockets. If
 	 * you need more than this, use the explicit add_socket API. */

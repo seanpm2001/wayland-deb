@@ -245,9 +245,6 @@ TEST(connection_marshal)
 	marshal(&data, "n", 12, &object);
 	assert(data.buffer[2] == object.id);
 
-	marshal(&data, "?n", 12, NULL);
-	assert(data.buffer[2] == 0);
-
 	array.data = (void *) text;
 	array.size = sizeof text;
 	marshal(&data, "a", 20, &array);
@@ -305,7 +302,6 @@ TEST(connection_marshal_nullables)
 {
 	struct marshal_data data;
 	struct wl_object object;
-	struct wl_array array;
 	const char text[] = "curry";
 
 	setup_marshal_data(&data);
@@ -317,21 +313,12 @@ TEST(connection_marshal_nullables)
 	marshal(&data, "?o", 12, NULL);
 	assert(data.buffer[2] == 0);
 
-	marshal(&data, "?a", 12, NULL);
-	assert(data.buffer[2] == 0);
-
 	marshal(&data, "?s", 12, NULL);
 	assert(data.buffer[2] == 0);
 
 	object.id = 55293;
 	marshal(&data, "?o", 12, &object);
 	assert(data.buffer[2] == object.id);
-
-	array.data = (void *) text;
-	array.size = sizeof text;
-	marshal(&data, "?a", 20, &array);
-	assert(data.buffer[2] == array.size);
-	assert(memcmp(&data.buffer[3], text, array.size) == 0);
 
 	marshal(&data, "?s", 20, text);
 	assert(data.buffer[2] == sizeof text);

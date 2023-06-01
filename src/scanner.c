@@ -411,11 +411,9 @@ static bool
 is_nullable_type(struct arg *arg)
 {
 	switch (arg->type) {
-	/* Strings, objects, and arrays are possibly nullable */
+	/* Strings and objects are possibly nullable */
 	case STRING:
 	case OBJECT:
-	case NEW_ID:
-	case ARRAY:
 		return true;
 	default:
 		return false;
@@ -1636,7 +1634,9 @@ emit_header(struct protocol *protocol, enum side side)
 		*p = i->name;
 	}
 
-	qsort(types.data, types.size / sizeof *p, sizeof *p, cmp_names);
+	if (types.size > 0)
+		qsort(types.data, types.size / sizeof *p, sizeof *p, cmp_names);
+
 	prev = NULL;
 	wl_array_for_each(p, &types) {
 		if (prev && strcmp(*p, prev) == 0)
@@ -1846,7 +1846,10 @@ emit_code(struct protocol *protocol, enum visibility vis)
 		emit_types_forward_declarations(protocol, &i->request_list, &types);
 		emit_types_forward_declarations(protocol, &i->event_list, &types);
 	}
-	qsort(types.data, types.size / sizeof *p, sizeof *p, cmp_names);
+
+	if (types.size > 0)
+		qsort(types.data, types.size / sizeof *p, sizeof *p, cmp_names);
+
 	prev = NULL;
 	wl_array_for_each(p, &types) {
 		if (prev && strcmp(*p, prev) == 0)
