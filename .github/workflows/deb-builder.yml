@@ -1,6 +1,6 @@
 name: Build Debian Package
 
-on: 
+on:
   push:
   workflow_dispatch:
 
@@ -18,6 +18,6 @@ jobs:
           DEB_BUILD_OPTIONS: noautodbgsym
         with:
           buildpackage-opts: --build=binary --no-sign
-          host-arch: arm64
+          extra-docker-args: --platform arm64
           apt-opts: --install-recommends
 
